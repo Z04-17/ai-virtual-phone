@@ -17,6 +17,8 @@ import {
 import MusicCommentsPage from "./music-comments";
 import MusicArtistPage from "./music-artist";
 import { loadMusicBg, playerBgStyle, MUSIC_BG_EVENT, type MusicBgConfig } from "@/lib/music-bg";
+import { loadCharacters } from "@/lib/character-storage";
+import { loadChatSessions, pushChatMessage, getChatSessions, type ChatMessage } from "@/lib/chat-storage";
 
 const PLAY_MODE_ICONS: Record<PlayMode, { svg: string; label: string }> = {
     sequence: {
@@ -71,6 +73,7 @@ export default function MusicPlayer() {
     const [palette, setPalette] = useState<CoverPalette>(DEFAULT_COVER_PALETTE);
     const [bgCfg, setBgCfg] = useState<MusicBgConfig>(() => loadMusicBg());
     const [commentTotal, setCommentTotal] = useState(0);
+    const [showListenTogetherModal, setShowListenTogetherModal] = useState(false);
 
     useEffect(() => {
         const handleBgChange = () => setBgCfg(loadMusicBg());
@@ -332,6 +335,55 @@ export default function MusicPlayer() {
             detail: { share: { type: "music", title: player.currentTrack.title, artist: player.currentTrack.artist } },
         }));
     }, [player.currentTrack]);
+
+    const handleInviteListenTogether = useCallback(async (charId: string) => {
+        if (!player.currentTrack) return;
+        const chars = loadCharacters();
+        const targetChar = chars.find(c => c.id === charId);
+        if (!targetChar) return;
+
+        const sessions = loadChatSessions();
+        const session = sessions.find(s => s.contactId === charId) || sessions.find(s => s.id === charId) || sessions[0];
+        if (!session) {
+            showMusicToast("未找到对应角色的聊天会话");
+            return;
+        }
+
+        const songTitle = player.currentTrack.title;
+        const songArtist = player.currentTrack.artist || "未知歌手";
+        const songCover = player.currentTrack.coverUrl || "";
+        const now = new Date().toISOString();
+
+        // 1. 发送一起听卡片消息
+        const cardMsg: ChatMessage = {
+            id: `msg_lt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            sessionId: session.id,
+            role: "user",
+            content: `[一起听：你分给${targetChar.name}一只耳机，两人正在一起听《${songTitle}》- ${songArtist}]`,
+            mediaType: "music",
+            mediaUrl: songCover,
+            mediaData: {
+                musicTitle: songTitle,
+                musicArtist: songArtist,
+                label: `🎵 一起听：${songTitle}`,
+            },
+            status: "sent",
+            createdAt: now,
+        };
+
+        pushChatMessage(cardMsg);
+        setShowListenTogetherModal(false);
+        showMusicToast(`已递给 ${targetChar.name} 一只耳机！`);
+
+        // 2. 触发角色在聊天室做出反应
+        try {
+            window.dispatchEvent(new CustomEvent("trigger-chat-ai-reply", {
+                detail: { sessionId: session.id, characterId: targetChar.id }
+            }));
+        } catch {
+            // ignore
+        }
+    }, [player.currentTrack, showMusicToast]);
 
     const openMiniChat = useCallback(() => {
         window.dispatchEvent(new CustomEvent("open-mini-chat"));
@@ -649,6 +701,18 @@ export default function MusicPlayer() {
                     </svg>
                     <span>分享</span>
                 </button>
+                <button
+                    className="mp-social-btn"
+                    style={{ color: "#fa2800" }}
+                    onClick={() => setShowListenTogetherModal(true)}
+                    title="递一只耳机给角色"
+                >
+                    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 18v-6a9 9 0 0 1 18 0v6" />
+                        <path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z" />
+                    </svg>
+                    <span>一起听</span>
+                </button>
             </div>
 
             {/* Queue drawer */}
@@ -751,6 +815,45 @@ export default function MusicPlayer() {
             {addResult && (
                 <div className={`music-toast ${addResult.ok ? "music-toast-ok" : "music-toast-err"}`}>
                     {addResult.ok ? "✓ " : "✗ "}{addResult.message}
+                </div>
+            )}
+
+            {/* 一起听：选择伴听角色弹窗 */}
+            {showListenTogetherModal && (
+                <div className="music-playlist-picker-overlay" onClick={() => setShowListenTogetherModal(false)}>
+                    <div className="music-playlist-picker" onClick={e => e.stopPropagation()} style={{ maxHeight: "70vh" }}>
+                        <div className="music-playlist-picker-header">
+                            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                                🎧 递一只耳机给TA (一起听)
+                            </span>
+                            <button className="music-playlist-picker-close" onClick={() => setShowListenTogetherModal(false)}>
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                            </button>
+                        </div>
+                        <div className="music-playlist-picker-list">
+                            {loadCharacters().length === 0 ? (
+                                <div className="music-playlist-picker-loading">暂无角色，请先创建角色卡</div>
+                            ) : loadCharacters().map(c => (
+                                <button
+                                    key={c.id}
+                                    className="music-playlist-picker-item"
+                                    onClick={() => handleInviteListenTogether(c.id)}
+                                    style={{ padding: "10px 14px" }}
+                                >
+                                    <img
+                                        src={c.avatar || "https://dummyimage.com/80x80/333/fff&text=AI"}
+                                        alt=""
+                                        className="music-playlist-picker-cover"
+                                        style={{ borderRadius: "50%", width: "42px", height: "42px" }}
+                                    />
+                                    <div className="music-playlist-picker-info">
+                                        <div className="music-playlist-picker-name" style={{ fontSize: "14px", fontWeight: 600 }}>{c.name}</div>
+                                        <div className="music-playlist-picker-count" style={{ fontSize: "12px", color: "#fa2800" }}>点击共享耳机并发送卡片</div>
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 </div>
             )}
 
